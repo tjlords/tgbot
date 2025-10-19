@@ -15,7 +15,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class BackupBot:
+class ModernBackupBot:
     def __init__(self):
         # Get environment variables
         try:
@@ -37,17 +37,6 @@ class BackupBot:
         if not all([self.api_id, self.api_hash, self.user_session, self.group_link, self.dest_channel]):
             logger.error("❌ Missing required environment variables")
             sys.exit(1)
-
-    async def safe_file_operation(self, file_path, operation="remove"):
-        """Safe file operations to avoid permission errors"""
-        try:
-            if operation == "remove" and os.path.exists(file_path):
-                os.remove(file_path)
-                return True
-            return False
-        except Exception as e:
-            logger.warning(f"⚠️ File operation failed for {file_path}: {e}")
-            return False
 
     async def init_client(self):
         """Initialize Telegram client"""
@@ -108,12 +97,10 @@ class BackupBot:
     async def handle_start(self, event):
         """Handle /start command"""
         help_text = """
-🤖 **Telegram Backup Bot - FIXED VERSION**
+🤖 **Telegram Backup Bot - MODERN VERSION**
 
-✅ **Fixed Issues:**
-- Python 3.13 compatibility
-- No imghdr dependency
-- Better error handling
+✅ **Compatible with Python 3.13+**
+✅ **No imghdr dependency**
 
 **Commands:**
 /start - Show this help
@@ -266,10 +253,11 @@ Use `/backup [range]` to start backup.
                 caption_parts.append(message.text)
             
             # Add metadata
+            from datetime import datetime
             metadata = [
                 f"📁 Message ID: {message.id}",
                 f"📅 Original: {message.date.strftime('%Y-%m-%d %H:%M')}",
-                f"💾 Backed up: {asyncio.get_event_loop().time()}",
+                f"💾 Backed up: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
                 f"🔗 Source: Private Group"
             ]
             caption_parts.append("\n" + "\n".join(metadata))
@@ -289,6 +277,8 @@ Use `/backup [range]` to start backup.
                         caption=caption,
                         supports_streaming=True
                     )
+                    # Clean up
+                    os.remove(file_path)
                 else:
                     # Fallback: forward with caption
                     logger.warning(f"⚠️ Media download failed, forwarding message {message.id}")
@@ -303,16 +293,18 @@ Use `/backup [range]` to start backup.
 
         except Exception as e:
             logger.error(f"❌ Failed to backup message {message.id}: {e}")
-            raise
-        finally:
-            # Always clean up downloaded files
+            # Clean up on error
             if file_path and os.path.exists(file_path):
-                await self.safe_file_operation(file_path, "remove")
+                try:
+                    os.remove(file_path)
+                except:
+                    pass
+            raise
 
     async def run(self):
         """Main bot loop"""
         try:
-            logger.info("🚀 Starting Telegram Backup Bot...")
+            logger.info("🚀 Starting Modern Telegram Backup Bot...")
             
             # Initialize client
             if not await self.init_client():
@@ -342,23 +334,9 @@ Use `/backup [range]` to start backup.
                 await self.client.disconnect()
                 logger.info("🔴 Bot disconnected")
 
-def main():
-    """Main entry point"""
-    try:
-        # Check Python version
-        python_version = sys.version_info
-        logger.info(f"🐍 Python {python_version.major}.{python_version.minor}.{python_version.micro}")
-        
-        # Create and run bot
-        bot = BackupBot()
-        
-        # Run the bot
-        asyncio.run(bot.run())
-        
-    except KeyboardInterrupt:
-        logger.info("👋 Bot stopped")
-    except Exception as e:
-        logger.error(f"💥 Fatal error: {e}")
+async def main():
+    bot = ModernBackupBot()
+    await bot.run()
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())
