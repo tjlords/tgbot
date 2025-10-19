@@ -3,18 +3,31 @@ import logging
 import os
 import random
 import re
-import time
+import threading
+from flask import Flask
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import FloodWait
 
+# Create Flask app for port binding
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🤖 Telegram Backup Bot is running!"
+
+@app.route('/health')
+def health():
+    return "✅ OK"
+
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-class FinalBackupBot:
+class WebServiceBackupBot:
     def __init__(self):
         # Get environment variables
         self.api_id = int(os.getenv('API_ID'))
@@ -26,7 +39,7 @@ class FinalBackupBot:
         
         # Create Pyrogram client
         self.app = Client(
-            "final_backup_bot",
+            "webservice_bot",
             api_id=self.api_id,
             api_hash=self.api_hash,
             session_string=self.session_string
@@ -51,24 +64,17 @@ class FinalBackupBot:
     async def handle_start(self, message: Message):
         """Handle /start command"""
         help_text = """
-🤖 **Smart Backup Bot - READY!**
+🤖 **Web Service Backup Bot**
 
-✅ **No group links needed**
-✅ **Works with any group you're member of**
-✅ **Just send message links**
+✅ **Fixed port binding**
+✅ **Works with any group**
 
 **How to use:**
-1. Go to any group you're member of
-2. Copy message link (right-click → Copy Link)
-3. Send: `/backup [message-link]`
+1. Forward any message from your target group to me
+2. Send: `/backup [message-link]`
 
 **Examples:**
-`/backup https://t.me/c/1234567890/18` - Backup single message
-`/backup https://t.me/c/1234567890/18-25` - Backup range
-`/backup https://t.me/c/1234567890/18,20,22` - Backup specific
-
-**Or use message IDs if you know the group:**
-`/backup 1234567890 18-25` - Group ID + range
+`/backup https://t.me/c/1234567890/18` - Backup message 18
         """
         await message.reply(help_text)
 
@@ -76,18 +82,18 @@ class FinalBackupBot:
         """Handle /backup command"""
         try:
             if len(message.command) < 2:
-                await message.reply("❌ Please provide message link or range\nExample: `/backup https://t.me/c/1234567890/18`")
+                await message.reply("❌ Please provide message link\nExample: `/backup https://t.me/c/1234567890/18`")
                 return
 
-            args = message.command[1:]
-            await message.reply(f"🔄 Processing backup request...")
+            link = message.command[1]
+            await message.reply(f"🔄 Processing: `{link}`")
 
-            success_count = await self.process_backup(args, message.chat.id)
+            success_count = await self.process_backup_smart(link, message.chat.id)
             
             if success_count > 0:
-                await message.reply(f"✅ Backup completed!\n📨 Successfully processed: {success_count} messages")
+                await message.reply(f"✅ Backup completed!\n📨 Processed: {success_count} messages")
             else:
-                await message.reply("❌ No messages were backed up. Please check the input.")
+                await message.reply("❌ Could not backup. Try forwarding a message from that group first.")
 
         except Exception as e:
             await message.reply(f"❌ Backup failed: {str(e)}")
@@ -97,122 +103,71 @@ class FinalBackupBot:
         try:
             me = await self.app.get_me()
             status_text = f"""
-📊 **Smart Backup Bot Status**
+📊 **Web Service Backup Bot**
 
 ✅ Connected: Yes
 👤 Account: {me.first_name}
 🆔 Your ID: {me.id}
-💡 Ready for backup commands!
-
-**Usage:**
-Just send `/backup` with message links from any group you're in.
+🌐 Web Service: Running
+💡 Ready for commands!
             """
             await message.reply(status_text)
         except Exception as e:
             await message.reply(f"❌ Status error: {str(e)}")
 
-    def extract_info_from_link(self, link):
-        """Extract group ID and message IDs from Telegram link"""
+    async def process_backup_smart(self, link, chat_id):
+        """Smart backup processing"""
         try:
-            # Pattern for t.me/c/ links
-            # https://t.me/c/1234567890/18
-            # https://t.me/c/1234567890/18-25
-            # https://t.me/c/1234567890/18,20,22
-            
-            if 't.me/c/' in link:
-                # Extract the parts after /c/
-                parts = link.split('/c/')[1].split('/')
-                if len(parts) >= 2:
-                    group_id = int(parts[0])
-                    message_part = parts[1]
-                    
-                    # Parse message range
-                    message_ids = self.parse_message_range(message_part)
-                    return group_id, message_ids
-            
-            return None, []
-            
-        except Exception as e:
-            logger.error(f"Link parse error: {e}")
-            return None, []
-
-    def parse_message_range(self, range_str):
-        """Parse message range from string"""
-        try:
-            # Single message: "18"
-            if '-' not in range_str and ',' not in range_str:
-                return [int(range_str)]
-            
-            # Range: "18-25"
-            if '-' in range_str:
-                start, end = map(int, range_str.split('-'))
-                return list(range(start, end + 1))
-            
-            # Comma-separated: "18,20,22"
-            if ',' in range_str:
-                return [int(x.strip()) for x in range_str.split(',')]
-            
-            return []
-            
-        except Exception as e:
-            logger.error(f"Range parse error: {e}")
-            return []
-
-    async def get_group_entity(self, group_id):
-        """Get group entity from ID"""
-        try:
-            # For groups, the ID is negative
-            if group_id > 0:
-                group_id = -group_id
-            
-            # Try to get the group
-            group = await self.app.get_chat(group_id)
-            return group
-            
-        except Exception as e:
-            logger.error(f"Failed to get group {group_id}: {e}")
-            return None
-
-    async def process_backup(self, args, chat_id):
-        """Process backup based on arguments"""
-        try:
-            # Check if first argument is a link
-            if args[0].startswith('https://t.me/'):
-                # Link-based backup
-                group_id, message_ids = self.extract_info_from_link(args[0])
-                if not group_id or not message_ids:
-                    await self.app.send_message(chat_id, "❌ Could not extract info from link")
-                    return 0
-                
-                group = await self.get_group_entity(group_id)
-                if not group:
-                    await self.app.send_message(chat_id, "❌ Could not access group. Make sure you're a member.")
-                    return 0
-                    
-                return await self.backup_messages(group, message_ids, chat_id)
-            
-            # Check if first argument is a group ID
-            elif args[0].isdigit() and len(args) > 1:
-                # Group ID + range backup
-                group_id = int(args[0])
-                range_str = args[1]
-                
-                group = await self.get_group_entity(group_id)
-                if not group:
-                    await self.app.send_message(chat_id, "❌ Could not access group. Make sure you're a member.")
-                    return 0
-                
-                message_ids = self.parse_message_range(range_str)
-                return await self.backup_messages(group, message_ids, chat_id)
-            
-            else:
-                await self.app.send_message(chat_id, "❌ Invalid format. Use message links or: /backup [group_id] [range]")
+            # Extract message ID from link
+            message_id = self.extract_message_id(link)
+            if not message_id:
+                await self.app.send_message(chat_id, "❌ Could not extract message ID from link")
                 return 0
+
+            # Get the group from recent forwarded messages
+            group = await self.find_group_from_history(chat_id)
+            if not group:
+                await self.app.send_message(
+                    chat_id,
+                    "❌ Could not determine the group.\n"
+                    "Please forward any message from that group to me first."
+                )
+                return 0
+
+            return await self.backup_messages(group, [message_id], chat_id)
                 
         except Exception as e:
             logger.error(f"Backup process error: {e}")
             await self.app.send_message(chat_id, f"❌ Backup error: {str(e)}")
             return 0
+
+    def extract_message_id(self, link):
+        """Extract message ID from link"""
+        try:
+            if 't.me/c/' in link:
+                parts = link.split('/')
+                # Get the last numeric part
+                for part in reversed(parts):
+                    if part.isdigit():
+                        return int(part)
+            return None
+        except:
+            return None
+
+    async def find_group_from_history(self, chat_id):
+        """Find group from message history"""
+        try:
+            # Get recent messages to find forwarded content
+            async for message in self.app.get_chat_history(chat_id, limit=50):
+                if message.forward_from_chat:
+                    # Found a forwarded message from a group
+                    group = message.forward_from_chat
+                    logger.info(f"🎯 Found group from history: {group.title}")
+                    return group
+            return None
+        except Exception as e:
+            logger.error(f"Error finding group from history: {e}")
+            return None
 
     async def backup_messages(self, group, message_ids, chat_id):
         """Backup multiple messages"""
@@ -226,7 +181,7 @@ Just send `/backup` with message links from any group you're in.
                 # Get message
                 message = await self.app.get_messages(group.id, msg_id)
                 if not message or message.empty:
-                    logger.warning(f"⚠️ Message {msg_id} not found in {group.title}")
+                    logger.warning(f"⚠️ Message {msg_id} not found")
                     continue
 
                 # Safety delay
@@ -239,9 +194,8 @@ Just send `/backup` with message links from any group you're in.
                 success_count += 1
 
                 # Progress update
-                if i % 3 == 0 or i == total:
-                    progress = f"📊 Progress: {i}/{total} ({success_count} successful)"
-                    await status_msg.edit_text(progress)
+                progress = f"📊 Progress: {i}/{total} ({success_count} successful)"
+                await status_msg.edit_text(progress)
 
             except FloodWait as e:
                 logger.warning(f"🚫 Flood wait: {e.value}s")
@@ -254,29 +208,14 @@ Just send `/backup` with message links from any group you're in.
     async def backup_single_message(self, message, group):
         """Backup a single message"""
         try:
-            # Create enhanced caption
-            caption_parts = []
-            if message.text:
-                caption_parts.append(message.text)
-            
-            # Add metadata
-            from datetime import datetime
-            metadata = [
-                f"📁 Message ID: {message.id}",
-                f"📅 Original: {message.date.strftime('%Y-%m-%d %H:%M')}",
-                f"💾 Backed up: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                f"🔗 Source: {group.title}"
-            ]
-            caption_parts.append("\n" + "\n".join(metadata))
-            caption = "\n".join(caption_parts)
+            # Create caption
+            caption = f"{message.text or ''}\n\n📁 ID: {message.id} | 📅 {message.date.strftime('%Y-%m-%d %H:%M')}"
 
             if message.media:
-                # Download media
-                logger.info(f"📥 Downloading media for message {message.id}")
+                # Download and upload media
                 file_path = await message.download()
                 
                 if file_path and os.path.exists(file_path):
-                    # Send based on media type
                     if message.video:
                         await self.app.send_video(
                             self.dest_channel,
@@ -302,53 +241,52 @@ Just send `/backup` with message links from any group you're in.
                 else:
                     # Forward as fallback
                     await message.forward(self.dest_channel)
-                    if caption.strip():
-                        await self.app.send_message(self.dest_channel, caption)
             else:
                 # Text message
                 await self.app.send_message(self.dest_channel, caption)
 
-            logger.info(f"✅ Backed up message {message.id} from {group.title}")
+            logger.info(f"✅ Backed up message {message.id}")
 
         except FloodWait as e:
             logger.warning(f"🚫 Flood wait: {e.value}s")
             await asyncio.sleep(e.value + 5)
-            await self.backup_single_message(message, group)
         except Exception as e:
             logger.error(f"❌ Failed to backup message {message.id}: {e}")
             raise
 
-    async def run(self):
-        """Main bot loop"""
+    async def run_telegram_bot(self):
+        """Run the Telegram bot part"""
         try:
-            logger.info("🚀 Starting Final Backup Bot...")
-            
-            # Start the client
+            logger.info("🚀 Starting Telegram Bot...")
             await self.app.start()
-            logger.info("✅ Pyrogram client started")
             
-            # Verify connection
             me = await self.app.get_me()
-            logger.info(f"👤 Connected as: {me.first_name} (ID: {me.id})")
+            logger.info(f"👤 Connected as: {me.first_name}")
             
-            logger.info("✅ Bot is fully operational!")
-            logger.info("💡 Send /start to see usage instructions")
-            logger.info("📝 Bot will keep running and listening for commands...")
+            logger.info("✅ Telegram Bot is running!")
             
-            # Keep the bot running indefinitely
-            while True:
-                await asyncio.sleep(10)  # Keep alive
-                
+            # Keep the bot running
+            await asyncio.Future()  # Run forever
+            
         except Exception as e:
-            logger.error(f"💥 Bot crashed: {e}")
+            logger.error(f"💥 Telegram bot crashed: {e}")
         finally:
-            if hasattr(self, 'app') and self.app.is_connected:
-                await self.app.stop()
-                logger.info("🔴 Bot stopped")
+            await self.app.stop()
+
+def run_flask():
+    """Run Flask web server"""
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
 
 async def main():
-    bot = FinalBackupBot()
-    await bot.run()
+    # Start Telegram bot in background
+    telegram_bot = WebServiceBackupBot()
+    
+    # Run Flask and Telegram bot concurrently
+    await asyncio.gather(
+        telegram_bot.run_telegram_bot(),
+        asyncio.to_thread(run_flask)
+    )
 
 if __name__ == '__main__':
     asyncio.run(main())
