@@ -3,6 +3,7 @@ import logging
 import os
 import random
 import re
+import time
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import FloodWait
@@ -13,7 +14,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class SmartBackupBot:
+class FinalBackupBot:
     def __init__(self):
         # Get environment variables
         self.api_id = int(os.getenv('API_ID'))
@@ -25,7 +26,7 @@ class SmartBackupBot:
         
         # Create Pyrogram client
         self.app = Client(
-            "smart_backup_bot",
+            "final_backup_bot",
             api_id=self.api_id,
             api_hash=self.api_hash,
             session_string=self.session_string
@@ -50,11 +51,11 @@ class SmartBackupBot:
     async def handle_start(self, message: Message):
         """Handle /start command"""
         help_text = """
-🤖 **Smart Backup Bot**
+🤖 **Smart Backup Bot - READY!**
 
 ✅ **No group links needed**
 ✅ **Works with any group you're member of**
-✅ **Just forward message links**
+✅ **Just send message links**
 
 **How to use:**
 1. Go to any group you're member of
@@ -320,7 +321,7 @@ Just send `/backup` with message links from any group you're in.
     async def run(self):
         """Main bot loop"""
         try:
-            logger.info("🚀 Starting Smart Backup Bot...")
+            logger.info("🚀 Starting Final Backup Bot...")
             
             # Start the client
             await self.app.start()
@@ -331,12 +332,13 @@ Just send `/backup` with message links from any group you're in.
             logger.info(f"👤 Connected as: {me.first_name} (ID: {me.id})")
             
             logger.info("✅ Bot is fully operational!")
-            logger.info("💡 Available commands: /start, /backup, /status")
-            logger.info("📝 Just send message links from any group you're member of!")
+            logger.info("💡 Send /start to see usage instructions")
+            logger.info("📝 Bot will keep running and listening for commands...")
             
-            # Keep running
-            await self.app.idle()
-            
+            # Keep the bot running indefinitely
+            while True:
+                await asyncio.sleep(10)  # Keep alive
+                
         except Exception as e:
             logger.error(f"💥 Bot crashed: {e}")
         finally:
@@ -345,7 +347,7 @@ Just send `/backup` with message links from any group you're in.
                 logger.info("🔴 Bot stopped")
 
 async def main():
-    bot = SmartBackupBot()
+    bot = FinalBackupBot()
     await bot.run()
 
 if __name__ == '__main__':
