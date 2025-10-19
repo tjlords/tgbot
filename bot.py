@@ -3,104 +3,60 @@ import logging
 import os
 import random
 import re
-import sys
-from telethon import TelegramClient, events
-from telethon.sessions import StringSession
-from telethon.tl.functions.messages import ImportChatInviteRequest
+from pyrogram import Client, filters
+from pyrogram.types import Message
+from pyrogram.errors import FloodWait
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-class ModernBackupBot:
+class PyrogramBackupBot:
     def __init__(self):
         # Get environment variables
-        try:
-            self.api_id = int(os.getenv('API_ID'))
-            self.api_hash = os.getenv('API_HASH')
-            self.user_session = os.getenv('USER_SESSION_STRING')
-            self.group_link = os.getenv('GROUP_INVITE_LINK')
-            self.dest_channel = int(os.getenv('DESTINATION_CHANNEL'))
-            self.min_delay = int(os.getenv('MIN_DELAY', '5'))
-            self.max_delay = int(os.getenv('MAX_DELAY', '15'))
-        except (ValueError, TypeError) as e:
-            logger.error(f"❌ Environment configuration error: {e}")
-            sys.exit(1)
+        self.api_id = int(os.getenv('API_ID'))
+        self.api_hash = os.getenv('API_HASH')
+        self.session_string = os.getenv('USER_SESSION_STRING')
+        self.group_link = os.getenv('GROUP_INVITE_LINK')
+        self.dest_channel = int(os.getenv('DESTINATION_CHANNEL'))
+        self.min_delay = int(os.getenv('MIN_DELAY', '5'))
+        self.max_delay = int(os.getenv('MAX_DELAY', '15'))
         
-        self.client = None
+        # Create Pyrogram client
+        self.app = Client(
+            "backup_bot",
+            api_id=self.api_id,
+            api_hash=self.api_hash,
+            session_string=self.session_string
+        )
+        
         self.group = None
-        
-        # Validate config
-        if not all([self.api_id, self.api_hash, self.user_session, self.group_link, self.dest_channel]):
-            logger.error("❌ Missing required environment variables")
-            sys.exit(1)
-
-    async def init_client(self):
-        """Initialize Telegram client"""
-        try:
-            logger.info("🔐 Initializing Telegram client...")
-            self.client = TelegramClient(
-                StringSession(self.user_session),
-                self.api_id,
-                self.api_hash
-            )
-            
-            await self.client.start()
-            logger.info("✅ Telegram client initialized successfully")
-            
-            # Verify connection
-            me = await self.client.get_me()
-            logger.info(f"👤 Connected as: {me.first_name} (ID: {me.id})")
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize client: {e}")
-            return False
-
-    async def join_group(self):
-        """Join the private group"""
-        try:
-            logger.info(f"🔗 Joining group: {self.group_link}")
-            
-            if self.group_link.startswith('https://t.me/+'):
-                hash_part = self.group_link.split('+')[1]
-                await self.client(ImportChatInviteRequest(hash_part))
-                self.group = await self.client.get_entity(self.group_link)
-                logger.info(f"✅ Joined group: {self.group.title}")
-                return True
-            else:
-                logger.error("❌ Invalid group link format")
-                return False
-                
-        except Exception as e:
-            logger.error(f"❌ Failed to join group: {e}")
-            return False
+        self.setup_handlers()
 
     def setup_handlers(self):
         """Setup command handlers"""
-        @self.client.on(events.NewMessage(pattern='/start'))
-        async def start_handler(event):
-            await self.handle_start(event)
+        @self.app.on_message(filters.command("start"))
+        async def start_handler(client, message):
+            await self.handle_start(message)
 
-        @self.client.on(events.NewMessage(pattern=r'/backup(\s+.*)?'))
-        async def backup_handler(event):
-            await self.handle_backup(event)
+        @self.app.on_message(filters.command("backup"))
+        async def backup_handler(client, message):
+            await self.handle_backup(message)
 
-        @self.client.on(events.NewMessage(pattern='/status'))
-        async def status_handler(event):
-            await self.handle_status(event)
+        @self.app.on_message(filters.command("status"))
+        async def status_handler(client, message):
+            await self.handle_status(message)
 
-    async def handle_start(self, event):
+    async def handle_start(self, message: Message):
         """Handle /start command"""
         help_text = """
-🤖 **Telegram Backup Bot - MODERN VERSION**
+🤖 **Telegram Backup Bot - PYROGRAM**
 
-✅ **Compatible with Python 3.13+**
 ✅ **No imghdr dependency**
+✅ **Python 3.13+ compatible**
+✅ **Modern & Fast**
 
 **Commands:**
 /start - Show this help
@@ -113,39 +69,36 @@ class ModernBackupBot:
 `/backup 18,20,22` - Backup specific messages
 `/backup https://t.me/c/.../18` - Backup from link
         """
-        await event.reply(help_text)
+        await message.reply(help_text)
 
-    async def handle_backup(self, event):
+    async def handle_backup(self, message: Message):
         """Handle /backup command"""
         try:
-            command_text = event.message.text.strip()
-            parts = command_text.split(' ', 1)
-            
-            if len(parts) < 2 or not parts[1].strip():
-                await event.reply("❌ Please specify message range\nExample: `/backup 18-25`")
+            if len(message.command) < 2:
+                await message.reply("❌ Please specify message range\nExample: `/backup 18-25`")
                 return
 
-            range_input = parts[1].strip()
-            await event.reply(f"🔄 Starting backup for: `{range_input}`\n⏳ This may take a while...")
+            range_input = message.command[1]
+            await message.reply(f"🔄 Starting backup for: `{range_input}`\n⏳ This may take a while...")
 
-            success_count = await self.process_backup(range_input, event.chat_id)
+            success_count = await self.process_backup(range_input, message.chat.id)
             
             if success_count > 0:
-                await event.reply(f"✅ Backup completed!\n📨 Successfully processed: {success_count} messages")
+                await message.reply(f"✅ Backup completed!\n📨 Successfully processed: {success_count} messages")
             else:
-                await event.reply("❌ No messages were backed up. Please check the message IDs.")
+                await message.reply("❌ No messages were backed up. Please check the message IDs.")
 
         except Exception as e:
-            await event.reply(f"❌ Backup failed: {str(e)}")
+            await message.reply(f"❌ Backup failed: {str(e)}")
 
-    async def handle_status(self, event):
+    async def handle_status(self, message: Message):
         """Handle /status command"""
         try:
-            me = await self.client.get_me()
+            me = await self.app.get_me()
             group_name = self.group.title if self.group else "Not connected"
             
             status_text = f"""
-📊 **Bot Status**
+📊 **Bot Status - PYROGRAM**
 
 ✅ Connected: Yes
 👤 Account: {me.first_name}
@@ -155,9 +108,9 @@ class ModernBackupBot:
 
 Use `/backup [range]` to start backup.
             """
-            await event.reply(status_text)
+            await message.reply(status_text)
         except Exception as e:
-            await event.reply(f"❌ Status error: {str(e)}")
+            await message.reply(f"❌ Status error: {str(e)}")
 
     def parse_range(self, input_str):
         """Parse message range from input"""
@@ -203,24 +156,46 @@ Use `/backup [range]` to start backup.
             logger.error(f"❌ Range parse error: {e}")
             return []
 
+    async def join_group(self):
+        """Join the private group"""
+        try:
+            logger.info(f"🔗 Joining group: {self.group_link}")
+            
+            if self.group_link.startswith('https://t.me/+'):
+                # Extract hash from invite link
+                hash_part = self.group_link.split('+')[1]
+                
+                # Join the group using the invite hash
+                result = await self.app.join_chat(hash_part)
+                self.group = result
+                logger.info(f"✅ Joined group: {self.group.title}")
+                return True
+            else:
+                logger.error("❌ Invalid group link format")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to join group: {e}")
+            return False
+
     async def process_backup(self, range_input, chat_id):
         """Process the backup request"""
         message_ids = self.parse_range(range_input)
         
         if not message_ids:
-            await self.client.send_message(chat_id, "❌ Invalid range format. Use: 18, 18-25, or message URL")
+            await self.app.send_message(chat_id, "❌ Invalid range format. Use: 18, 18-25, or message URL")
             return 0
 
         total = len(message_ids)
         success_count = 0
 
-        status_msg = await self.client.send_message(chat_id, f"📊 Processing {total} messages...")
+        status_msg = await self.app.send_message(chat_id, f"📊 Processing {total} messages...")
 
         for i, msg_id in enumerate(message_ids, 1):
             try:
                 # Get message
-                message = await self.client.get_messages(self.group, ids=msg_id)
-                if not message:
+                message = await self.app.get_messages(self.group.id, msg_id)
+                if not message or message.empty:
                     logger.warning(f"⚠️ Message {msg_id} not found")
                     continue
 
@@ -236,8 +211,11 @@ Use `/backup [range]` to start backup.
                 # Progress update every 3 messages or at the end
                 if i % 3 == 0 or i == total:
                     progress = f"📊 Progress: {i}/{total} ({success_count} successful)"
-                    await status_msg.edit(progress)
+                    await status_msg.edit_text(progress)
 
+            except FloodWait as e:
+                logger.warning(f"🚫 Flood wait: {e.value}s")
+                await asyncio.sleep(e.value + 5)
             except Exception as e:
                 logger.error(f"❌ Message {msg_id} failed: {e}")
 
@@ -245,7 +223,6 @@ Use `/backup [range]` to start backup.
 
     async def backup_message(self, message):
         """Backup a single message"""
-        file_path = None
         try:
             # Create enhanced caption
             caption_parts = []
@@ -264,78 +241,106 @@ Use `/backup [range]` to start backup.
             caption = "\n".join(caption_parts)
 
             if message.media:
-                # Download media
+                # Download and forward media
                 logger.info(f"📥 Downloading media for message {message.id}")
-                file_path = await self.client.download_media(message, file=f"temp_{message.id}")
+                
+                # Download the media file
+                file_path = await message.download()
                 
                 if file_path and os.path.exists(file_path):
-                    # Upload to destination
+                    # Send to destination channel
                     logger.info(f"📤 Uploading media for message {message.id}")
-                    await self.client.send_file(
-                        self.dest_channel,
-                        file_path,
-                        caption=caption,
-                        supports_streaming=True
-                    )
-                    # Clean up
+                    
+                    if message.video:
+                        await self.app.send_video(
+                            self.dest_channel,
+                            file_path,
+                            caption=caption,
+                            supports_streaming=True
+                        )
+                    elif message.photo:
+                        await self.app.send_photo(
+                            self.dest_channel,
+                            file_path,
+                            caption=caption
+                        )
+                    elif message.document:
+                        await self.app.send_document(
+                            self.dest_channel,
+                            file_path,
+                            caption=caption
+                        )
+                    elif message.audio:
+                        await self.app.send_audio(
+                            self.dest_channel,
+                            file_path,
+                            caption=caption
+                        )
+                    else:
+                        # Fallback for other media types
+                        await self.app.send_document(
+                            self.dest_channel,
+                            file_path,
+                            caption=caption
+                        )
+                    
+                    # Clean up downloaded file
                     os.remove(file_path)
                 else:
-                    # Fallback: forward with caption
+                    # Fallback: forward the message
                     logger.warning(f"⚠️ Media download failed, forwarding message {message.id}")
-                    await self.client.send_message(self.dest_channel, caption)
-                    await message.forward_to(self.dest_channel)
+                    await message.forward(self.dest_channel)
+                    # Also send caption separately
+                    if caption.strip():
+                        await self.app.send_message(self.dest_channel, caption)
             else:
                 # Text message
                 logger.info(f"📝 Backing up text message {message.id}")
-                await self.client.send_message(self.dest_channel, caption)
+                await self.app.send_message(self.dest_channel, caption)
 
             logger.info(f"✅ Successfully backed up message {message.id}")
 
+        except FloodWait as e:
+            logger.warning(f"🚫 Flood wait during backup: {e.value}s")
+            await asyncio.sleep(e.value + 5)
+            await self.backup_message(message)  # Retry
         except Exception as e:
             logger.error(f"❌ Failed to backup message {message.id}: {e}")
-            # Clean up on error
-            if file_path and os.path.exists(file_path):
-                try:
-                    os.remove(file_path)
-                except:
-                    pass
             raise
 
     async def run(self):
         """Main bot loop"""
         try:
-            logger.info("🚀 Starting Modern Telegram Backup Bot...")
+            logger.info("🚀 Starting Pyrogram Backup Bot...")
             
-            # Initialize client
-            if not await self.init_client():
-                logger.error("❌ Failed to initialize client")
-                return
-
+            # Start the client
+            await self.app.start()
+            logger.info("✅ Pyrogram client started")
+            
+            # Verify connection
+            me = await self.app.get_me()
+            logger.info(f"👤 Connected as: {me.first_name} (ID: {me.id})")
+            
             # Join group
             if not await self.join_group():
                 logger.error("❌ Failed to join group")
                 return
 
-            # Setup command handlers
-            self.setup_handlers()
-
             logger.info("✅ Bot is fully operational! Send commands via Telegram.")
             logger.info("💡 Available commands: /start, /backup, /status")
             
             # Keep the bot running
-            await self.client.run_until_disconnected()
+            await self.app.idle()
 
-        except KeyboardInterrupt:
-            logger.info("🛑 Bot stopped by user")
         except Exception as e:
             logger.error(f"💥 Bot crashed: {e}")
         finally:
-            if self.client:
-                await self.client.disconnect()
-                logger.info("🔴 Bot disconnected")
+            if self.app.is_connected:
+                await self.app.stop()
+                logger.info("🔴 Bot stopped")
 
 async def main():
-    bot = ModernBackupBot()
+    bot = PyrogramBackupBot()
     await bot.run()
 
 if __name__ == '__main__':
