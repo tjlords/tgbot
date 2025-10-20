@@ -50,44 +50,64 @@ class BackupBot:
         async def backup_handler(client, message):
             await self.handle_backup(message)
 
+        @self.app.on_message(filters.command("verify"))
+        async def verify_handler(client, message):
+            await self.handle_verify(message)
+
     async def handle_start(self, message: Message):
         help_text = """
-🤖 **Backup Bot - EXACT COPY**
+🤖 **Backup Bot - ALL FORMATS**
 
-✅ **Preserves original captions and file names**
-✅ **Same reliable web service**
-✅ **No port issues**
+✅ **Supports all link formats:**
+• Groups with topics: `/backup https://t.me/c/3166766661/4/19`
+• Normal groups: `/backup https://t.me/c/3166766661/19`  
+• Channels: `/backup https://t.me/c/2973208943/3`
 
-**Usage:**
-`/backup https://t.me/c/1234567890/18`
+✅ **Output verification**
+✅ **Exact copy preservation**
 
-**Features:**
-• Original captions preserved
-• File names unchanged  
-• Media attributes kept
-• Safe rate limiting
+**Commands:**
+`/backup [link]` - Backup message
+`/verify` - Check where backups are sent
         """
         await message.reply(help_text)
+
+    async def handle_verify(self, message: Message):
+        """Verify where backups are sent"""
+        try:
+            # Get destination channel info
+            dest_chat = await self.app.get_chat(self.dest_channel)
+            await message.reply(
+                f"🔍 **Backup Destination:**\n"
+                f"📢 **Channel:** {dest_chat.title}\n"
+                f"🆔 **ID:** `{dest_chat.id}`\n"
+                f"🔗 **Type:** {dest_chat.type}\n\n"
+                f"✅ All backups are sent to this channel"
+            )
+        except Exception as e:
+            await message.reply(f"❌ Cannot verify destination: {e}")
 
     async def handle_backup(self, message: Message):
         try:
             if len(message.command) < 2:
-                await message.reply("❌ Please provide message link\nExample: `/backup https://t.me/c/1234567890/18`")
+                await message.reply("❌ Please provide message link")
                 return
 
             link = message.command[1]
             await message.reply(f"🔄 Processing: `{link}`")
 
-            # Extract message ID
-            message_id = self.extract_message_id(link)
-            if not message_id:
-                await message.reply("❌ Could not extract message ID")
+            # Extract chat ID and message ID using new method
+            chat_id, message_id = self.extract_from_link(link)
+            if not chat_id or not message_id:
+                await message.reply("❌ Invalid link format")
                 return
 
+            await message.reply(f"🔍 Extracted - Chat: `{chat_id}`, Message: `{message_id}`")
+
             # Find correct chat
-            chat = await self.find_correct_chat(link, message.chat.id)
+            chat = await self.find_correct_chat(chat_id, message.chat.id)
             if not chat:
-                await message.reply("❌ Could not find the chat")
+                await message.reply("❌ Could not access the chat")
                 return
 
             await message.reply(f"✅ Found: **{chat['title']}**\n📊 Starting backup...")
@@ -95,53 +115,88 @@ class BackupBot:
             success_count = await self.process_backup(chat, [message_id], message.chat.id)
             
             if success_count > 0:
-                await message.reply(f"✅ Backup completed!\n📨 Processed: {success_count} messages")
+                await message.reply(f"✅ Backup completed!\n📨 Processed: {success_count} messages to backup channel")
             else:
                 await message.reply("❌ No messages were backed up")
 
         except Exception as e:
             await message.reply(f"❌ Backup failed: {str(e)}")
 
-    def extract_message_id(self, link):
+    def extract_from_link(self, link):
+        """
+        Extract chat ID and message ID from all formats:
+        - Groups with topics: https://t.me/c/3166766661/4/19
+        - Normal groups: https://t.me/c/3166766661/19  
+        - Channels: https://t.me/c/2973208943/3
+        """
         try:
             if 't.me/c/' in link:
-                parts = link.split('/')
-                for part in reversed(parts):
-                    if part.isdigit():
-                        return int(part)
-            return None
-        except:
-            return None
-
-    async def find_correct_chat(self, link, user_chat_id):
-        try:
-            link_chat_id = self.extract_chat_id_from_link(link)
-            if link_chat_id:
-                chat_formats = [f"-100{link_chat_id}", f"-{link_chat_id}"]
+                # Remove protocol and get the path after /c/
+                path = link.split('/c/')[1]
+                parts = path.split('/')
                 
-                for chat_id in chat_formats:
-                    try:
-                        chat = await self.app.get_chat(chat_id)
+                logger.info(f"🔍 Parsing link parts: {parts}")
+                
+                if len(parts) >= 2:
+                    chat_id_from_link = parts[0]
+                    
+                    # The last part is always the message ID
+                    message_id = int(parts[-1])
+                    
+                    logger.info(f"✅ Extracted - Chat ID: {chat_id_from_link}, Message ID: {message_id}")
+                    return chat_id_from_link, message_id
+            
+            logger.error("❌ Could not parse link format")
+            return None, None
+            
+        except Exception as e:
+            logger.error(f"Link extraction error: {e}")
+            return None, None
+
+    async def find_correct_chat(self, chat_id_from_link, user_chat_id):
+        """Find the correct chat using multiple formats"""
+        try:
+            # Try different chat ID formats
+            chat_formats = [
+                f"-100{chat_id_from_link}",  # Most common for supergroups/channels
+                f"-{chat_id_from_link}",     # Alternative format
+                chat_id_from_link,           # Original format from link
+            ]
+            
+            logger.info(f"🔄 Trying chat formats: {chat_formats}")
+            
+            for chat_id in chat_formats:
+                try:
+                    chat = await self.app.get_chat(chat_id)
+                    logger.info(f"✅ Found chat: {chat.title} with ID: {chat_id}")
+                    return {
+                        'id': chat.id,
+                        'title': chat.title,
+                        'type': chat.type
+                    }
+                except Exception as e:
+                    logger.info(f"❌ Failed with {chat_id}: {e}")
+                    continue
+
+            # If all formats fail, try to find in user's dialogs
+            await user_chat_id.reply("🔍 Searching in your dialogs...")
+            async for dialog in self.app.get_dialogs():
+                chat = dialog.chat
+                if chat.type in ["group", "supergroup", "channel"]:
+                    # Check if this might be our target chat
+                    chat_id_str = str(chat.id).replace('-100', '').replace('-', '')
+                    if chat_id_from_link in chat_id_str:
+                        logger.info(f"🎯 Found matching chat in dialogs: {chat.title}")
                         return {
                             'id': chat.id,
                             'title': chat.title,
                             'type': chat.type
                         }
-                    except:
-                        continue
+            
             return None
+            
         except Exception as e:
             logger.error(f"Error finding chat: {e}")
-            return None
-
-    def extract_chat_id_from_link(self, link):
-        try:
-            if 't.me/c/' in link:
-                parts = link.split('/c/')[1].split('/')
-                if parts:
-                    return parts[0]
-            return None
-        except:
             return None
 
     async def process_backup(self, chat, message_ids, user_chat_id):
@@ -254,7 +309,7 @@ class BackupBot:
                         original_msg.text
                     )
 
-            logger.info(f"✅ Backed up message {original_msg.id}")
+            logger.info(f"✅ Backed up message {original_msg.id} to channel {self.dest_channel}")
 
         except Exception as e:
             logger.error(f"Backup failed: {e}")
@@ -269,6 +324,14 @@ class BackupBot:
             await self.app.start()
             me = await self.app.get_me()
             logger.info(f"✅ Connected as: {me.first_name}")
+            
+            # Verify destination channel
+            try:
+                dest_chat = await self.app.get_chat(self.dest_channel)
+                logger.info(f"✅ Backup destination: {dest_chat.title} (ID: {dest_chat.id})")
+            except Exception as e:
+                logger.error(f"❌ Cannot access backup channel: {e}")
+            
             await asyncio.Future()  # Keep running
         except Exception as e:
             logger.error(f"Telegram bot crashed: {e}")
