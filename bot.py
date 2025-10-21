@@ -516,4 +516,182 @@ class SmartDiscoverBackupBot:
                         chat = await self.app.get_chat(chat_id)
                         if chat:
                             logger.info(f"✅ Found chat with ID {chat_id}: {chat.title}")
-        
+                            return {
+                                'id': chat.id,
+                                'title': chat.title,
+                                'type': chat.type
+                            }
+                    except Exception as e:
+                        logger.info(f"❌ Failed with ID {chat_id}: {e}")
+                        continue
+
+            # Method 2: Check if we have this chat in dialogs by matching message
+            await self.app.send_message(user_chat_id, "🔍 Searching in your recent chats...")
+            user_chats = await self.get_user_chats()
+            
+            # Try to find a message in each chat to verify access
+            message_ids = self.extract_message_ids_all_formats(link)
+            if message_ids:
+                first_message_id = message_ids[0]
+                for chat in user_chats:
+                    try:
+                        # Try to get the first message to verify access
+                        message = await self.app.get_messages(chat['id'], first_message_id)
+                        if message and not getattr(message, "empty", False):
+                            logger.info(f"✅ Verified chat {chat['title']} has message {first_message_id}")
+                            return chat
+                    except Exception:
+                        continue
+
+            # Method 3: Ask user to forward a message
+            await self.app.send_message(
+                user_chat_id,
+                "❓ Could not automatically find the chat.\n"
+                "Please forward any message from that chat to me, then try again."
+            )
+            return None
+
+        except Exception as e:
+            logger.error(f"Error finding correct chat: {e}")
+            return None
+
+    def extract_chat_id_from_link(self, link):
+        """Extract chat ID from link"""
+        try:
+            if 't.me/c/' in link:
+                parts = link.split('/c/')[1].split('/')
+                if parts:
+                    return parts[0]
+            return None
+        except:
+            return None
+
+    async def process_backup(self, chat, message_ids, user_chat_id):
+        """Process backup"""
+        try:
+            total = len(message_ids)
+            success_count = 0
+
+            status_msg = await self.app.send_message(user_chat_id, f"📊 Processing {total} messages from **{chat['title']}**...")
+
+            for i, msg_id in enumerate(message_ids, 1):
+                try:
+                    # Get message
+                    message = await self.app.get_messages(chat['id'], msg_id)
+                    
+                    if message and not getattr(message, "empty", False):
+                        # Safety delay
+                        delay = random.randint(self.min_delay, self.max_delay)
+                        await asyncio.sleep(delay)
+
+                        # Backup message WITH ORIGINAL CAPTION
+                        await self.backup_single_message_exact(message, chat)
+                        success_count += 1
+
+                        logger.info(f"✅ Backed up message {msg_id} from {chat['title']}")
+                    else:
+                        logger.warning(f"⚠️ Message {msg_id} not found in {chat['title']}")
+
+                    # Progress update
+                    progress = f"📊 Progress: {i}/{total} ({success_count} successful)"
+                    await status_msg.edit_text(progress)
+
+                except FloodWait as e:
+                    logger.warning(f"🚫 Flood wait: {e.value}s")
+                    await asyncio.sleep(e.value + 5)
+                except Exception as e:
+                    logger.error(f"❌ Message {msg_id} failed: {e}")
+
+            return success_count
+                
+        except Exception as e:
+            logger.error(f"Backup process error: {e}")
+            await self.app.send_message(user_chat_id, f"❌ Backup error: {str(e)}")
+            return 0
+
+    async def backup_single_message_exact(self, message, chat):
+        """Backup a single message with EXACT original caption"""
+        try:
+            # PRESERVE ORIGINAL CAPTION EXACTLY - NO ADDED METADATA
+            original_caption = message.caption or ""
+            
+            # For text messages without media, use the text as caption
+            if not message.media and message.text:
+                original_caption = message.text
+
+            if message.media:
+                # Download and upload media
+                file_path = await message.download()
+                
+                if file_path and os.path.exists(file_path):
+                    if message.video:
+                        await self.app.send_video(
+                            self.dest_channel,
+                            file_path,
+                            caption=original_caption,  # Original caption only
+                            supports_streaming=True
+                        )
+                    elif message.photo:
+                        await self.app.send_photo(
+                            self.dest_channel,
+                            file_path,
+                            caption=original_caption  # Original caption only
+                        )
+                    else:
+                        await self.app.send_document(
+                            self.dest_channel,
+                            file_path,
+                            caption=original_caption  # Original caption only
+                        )
+                    
+                    # Clean up
+                    os.remove(file_path)
+                else:
+                    # Forward as fallback (preserves original content)
+                    await message.forward(self.dest_channel)
+            else:
+                # Text message - send original text only
+                await self.app.send_message(self.dest_channel, original_caption)
+
+            logger.info(f"✅ Backed up message {message.id} with original caption")
+
+        except FloodWait as e:
+            logger.warning(f"🚫 Flood wait: {e.value}s")
+            await asyncio.sleep(e.value + 5)
+            await self.backup_single_message_exact(message, chat)
+        except Exception as e:
+            logger.error(f"❌ Failed to backup message {message.id}: {e}")
+            raise
+
+    async def run_telegram_bot(self):
+        """Run the Telegram bot part"""
+        try:
+            await self.app.start()
+            me = await self.app.get_me()
+            logger.info(f"👤 Connected as: {me.first_name}")
+            
+            # Preload user chats
+            chats = await self.get_user_chats()
+            logger.info(f"📋 Found {len(chats)} chats in user dialogs")
+            
+            await asyncio.Future()  # Run forever
+            
+        except Exception as e:
+            logger.error(f"Telegram bot crashed: {e}")
+        finally:
+            await self.app.stop()
+
+def run_flask():
+    """Run Flask web server"""
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
+
+async def main():
+    bot = SmartDiscoverBackupBot()
+    await asyncio.gather(
+        bot.run_telegram_bot(),
+        asyncio.to_thread(run_flask)
+    )
+
+if __name__ == '__main__':
+    asyncio.run(main())
