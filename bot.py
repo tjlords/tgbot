@@ -35,6 +35,7 @@ class SmartDiscoverBackupBot:
         self.dest_channel = int(os.getenv('DESTINATION_CHANNEL'))
         self.min_delay = int(os.getenv('MIN_DELAY', '5'))
         self.max_delay = int(os.getenv('MAX_DELAY', '15'))
+        self.owner_id = int(os.getenv('OWNER_ID', '0'))  # Add owner ID
         
         # Create Pyrogram client
         self.app = Client(
@@ -46,34 +47,35 @@ class SmartDiscoverBackupBot:
         
         self.setup_handlers()
         self.chat_cache = {}  # Cache for chat IDs
-        self.bot_user_id = None  # Will be set when client starts
 
     def setup_handlers(self):
         """Setup command handlers"""
-        # Filter to only respond when the message is sent to the bot itself
-        def bot_self_filter(_, __, message: Message):
-            # Only respond if the message is sent to the bot's own user account
-            if message.chat.type == "private":
-                # In private chat, check if it's the bot talking to itself
-                return message.from_user and message.from_user.id == self.bot_user_id
-            return False
+        # Private chat filter - only private messages
+        private_filter = filters.private
         
-        bot_self_filter = filters.create(bot_self_filter)
+        # Owner filter - only the owner can use commands
+        def owner_filter(_, __, message: Message):
+            return message.from_user and message.from_user.id == self.owner_id
+        
+        owner_filter = filters.create(owner_filter)
+        
+        # Combined filter - private chat AND owner
+        private_owner_filter = private_filter & owner_filter
 
-        @self.app.on_message(filters.command("start") & bot_self_filter)
+        @self.app.on_message(filters.command("tgprostart") & private_owner_filter)
         async def start_handler(client, message):
             await self.handle_start(message)
 
-        @self.app.on_message(filters.command("backup") & bot_self_filter)
+        @self.app.on_message(filters.command("tgprobackup") & private_owner_filter)
         async def backup_handler(client, message):
             await self.handle_backup(message)
 
-        @self.app.on_message(filters.command("chats") & bot_self_filter)
+        @self.app.on_message(filters.command("chats") & private_owner_filter)
         async def chats_handler(client, message):
             await self.handle_chats(message)
         
         # COMPLETELY IGNORE all other commands - no response at all
-        @self.app.on_message(filters.command(["start", "backup", "chats"]))
+        @self.app.on_message(filters.command(["tgprostart", "tgprobackup", "chats", "start", "backup"]))
         async def ignore_all_other_commands(client, message):
             # Simply return without doing anything - no response at all
             return
@@ -84,10 +86,10 @@ class SmartDiscoverBackupBot:
 🤖 **Smart Backup Bot - RANGES & EXACT COPY**
 
 ✅ **Supports ALL message ranges:**
-• Single: `/tgprobackup https://t.me/c/123456789/4/18`
-• Range: `/tgprobackup https://t.me/c/123456789/4/10-16`
-• Multiple: `/tgprobackup https://t.me/c/123456789/4/1,4,5-10`
-• Mixed: `/tgprobackup https://t.me/c/123456789/4/1,3,5-8,10`
+• Single: `/tgprobackup https://t.me/c/3166766661/4/18`
+• Range: `/tgprobackup https://t.me/c/3166766661/4/10-16`
+• Multiple: `/tgprobackup https://t.me/c/3166766661/4/1,4,5-10`
+• Mixed: `/tgprobackup https://t.me/c/3166766661/4/1,3,5-8,10`
 
 ✅ **Preserves original captions exactly**
 ✅ **Handles all link formats**
@@ -95,6 +97,7 @@ class SmartDiscoverBackupBot:
 **Commands:**
 `/tgprobackup [link]` - Backup messages
 `/chats` - List your available groups
+`/tgprostart` - Show this help
         """
         await message.reply(help_text)
 
@@ -129,7 +132,7 @@ class SmartDiscoverBackupBot:
         """Handle /tgprobackup command"""
         try:
             if len(message.command) < 2:
-                await message.reply("❌ Please provide message link\nExample: `/tgprobackup https://t.me/c/123456789/4/18`")
+                await message.reply("❌ Please provide message link\nExample: `/tgprobackup https://t.me/c/3166766661/4/18`")
                 return
 
             link = message.command[1]
@@ -162,10 +165,10 @@ class SmartDiscoverBackupBot:
     def extract_message_ids_all_formats(self, link):
         """
         Extract message IDs from ALL formats including ranges:
-        - Single: https://t.me/c/123456789/4/18
-        - Range: https://t.me/c/123456789/4/10-16
-        - Multiple: https://t.me/c/123456789/4/1,4,5-10
-        - Mixed: https://t.me/c/123456789/4/1,3,5-8,10
+        - Single: https://t.me/c/3166766661/4/18
+        - Range: https://t.me/c/3166766661/4/10-16
+        - Multiple: https://t.me/c/3166766661/4/1,4,5-10
+        - Mixed: https://t.me/c/3166766661/4/1,3,5-8,10
         """
         try:
             if 't.me/c/' in link:
@@ -411,9 +414,10 @@ class SmartDiscoverBackupBot:
             me = await self.app.get_me()
             logger.info(f"👤 Connected as: {me.first_name}")
             
-            # Store the bot's own user ID
-            self.bot_user_id = me.id
-            logger.info(f"🤖 Bot User ID: {self.bot_user_id}")
+            # Set owner ID if not already set
+            if not self.owner_id:
+                self.owner_id = me.id
+                logger.info(f"👑 Owner ID set to: {self.owner_id}")
             
             # Preload user chats
             chats = await self.get_user_chats()
