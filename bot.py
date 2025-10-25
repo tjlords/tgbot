@@ -77,10 +77,7 @@ class SmartDiscoverBackupBot:
         # Ignore commands from non-owners or in groups
         @self.app.on_message(filters.command(["start", "backup", "chats"]))
         async def ignore_other_commands(client, message):
-            # Only respond if it's the owner but in a group (to avoid confusion)
-            if message.from_user and message.from_user.id == self.owner_id and not message.chat.type == "private":
-                await message.reply("🤖 Please use commands in private chat with me.")
-            # For non-owners, do nothing (silently ignore)
+             return # For non-owners, do nothing (silently ignore)
 
     async def handle_start(self, message: Message):
         """Handle /start command"""
