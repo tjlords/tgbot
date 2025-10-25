@@ -79,21 +79,21 @@ class SmartDiscoverBackupBot:
             return
 
     async def handle_start(self, message: Message):
-        """Handle /start command"""
+        """Handle /tgprostart command"""
         help_text = """
 🤖 **Smart Backup Bot - RANGES & EXACT COPY**
 
 ✅ **Supports ALL message ranges:**
-• Single: `/backup https://t.me/c/3166766661/4/18`
-• Range: `/backup https://t.me/c/3166766661/4/10-16`
-• Multiple: `/backup https://t.me/c/3166766661/4/1,4,5-10`
-• Mixed: `/backup https://t.me/c/3166766661/4/1,3,5-8,10`
+• Single: `/tgprobackup https://t.me/c/123456789/4/18`
+• Range: `/tgprobackup https://t.me/c/123456789/4/10-16`
+• Multiple: `/tgprobackup https://t.me/c/123456789/4/1,4,5-10`
+• Mixed: `/tgprobackup https://t.me/c/123456789/4/1,3,5-8,10`
 
 ✅ **Preserves original captions exactly**
 ✅ **Handles all link formats**
 
 **Commands:**
-`/backup [link]` - Backup messages
+`/tgprobackup [link]` - Backup messages
 `/chats` - List your available groups
         """
         await message.reply(help_text)
@@ -126,10 +126,10 @@ class SmartDiscoverBackupBot:
             await message.reply(f"❌ Error listing chats: {str(e)}")
 
     async def handle_backup(self, message: Message):
-        """Handle /backup command"""
+        """Handle /tgprobackup command"""
         try:
             if len(message.command) < 2:
-                await message.reply("❌ Please provide message link\nExample: `/backup https://t.me/c/3166766661/4/18`")
+                await message.reply("❌ Please provide message link\nExample: `/tgprobackup https://t.me/c/123456789/4/18`")
                 return
 
             link = message.command[1]
@@ -162,10 +162,10 @@ class SmartDiscoverBackupBot:
     def extract_message_ids_all_formats(self, link):
         """
         Extract message IDs from ALL formats including ranges:
-        - Single: https://t.me/c/3166766661/4/18
-        - Range: https://t.me/c/3166766661/4/10-16
-        - Multiple: https://t.me/c/3166766661/4/1,4,5-10
-        - Mixed: https://t.me/c/3166766661/4/1,3,5-8,10
+        - Single: https://t.me/c/123456789/4/18
+        - Range: https://t.me/c/123456789/4/10-16
+        - Multiple: https://t.me/c/123456789/4/1,4,5-10
+        - Mixed: https://t.me/c/123456789/4/1,3,5-8,10
         """
         try:
             if 't.me/c/' in link:
