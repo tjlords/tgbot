@@ -45,6 +45,8 @@ class SmartDiscoverBackupBot:
             session_string=self.session_string
         )
         
+        # Backup control variables
+        self.active_backups = {}  # Track active backups by user_id
         self.setup_handlers()
         self.chat_cache = {}  # Cache for chat IDs
 
@@ -73,9 +75,13 @@ class SmartDiscoverBackupBot:
         @self.app.on_message(filters.command("chats") & private_owner_filter)
         async def chats_handler(client, message):
             await self.handle_chats(message)
+
+        @self.app.on_message(filters.command("tgprostop") & private_owner_filter)
+        async def stop_handler(client, message):
+            await self.handle_stop(message)
         
         # COMPLETELY IGNORE all other commands - no response at all
-        @self.app.on_message(filters.command(["tgprostart", "tgprobackup", "chats", "start", "backup"]))
+        @self.app.on_message(filters.command(["tgprostart", "tgprobackup", "tgprostop", "chats", "start", "backup", "stop"]))
         async def ignore_all_other_commands(client, message):
             # Simply return without doing anything - no response at all
             return
@@ -93,13 +99,27 @@ class SmartDiscoverBackupBot:
 
 ✅ **Preserves original captions exactly**
 ✅ **Handles all link formats**
+✅ **Skips missing messages automatically**
+✅ **Stop ongoing backups with /tgprostop**
 
 **Commands:**
 `/tgprobackup [link]` - Backup messages
+`/tgprostop` - Stop ongoing backup (completes current message)
 `/chats` - List your available groups
 `/tgprostart` - Show this help
         """
         await message.reply(help_text)
+
+    async def handle_stop(self, message: Message):
+        """Handle /tgprostop command"""
+        user_id = message.from_user.id
+        
+        if user_id in self.active_backups:
+            self.active_backups[user_id] = False  # Set stop flag
+            await message.reply("🛑 Stop signal received! Current message will complete, then backup will stop.")
+            logger.info(f"🛑 Stop requested by user {user_id}")
+        else:
+            await message.reply("ℹ️ No active backup found to stop.")
 
     async def handle_chats(self, message: Message):
         """List available chats"""
@@ -150,14 +170,19 @@ class SmartDiscoverBackupBot:
                 await message.reply("❌ Could not find the chat. Make sure you're a member and try `/chats` to see available chats.")
                 return
 
-            await message.reply(f"✅ Found: **{chat['title']}**\n📊 Starting backup of {len(message_ids)} messages...")
+            await message.reply(f"✅ Found: **{chat['title']}**\n📊 Starting backup of {len(message_ids)} messages...\n⚠️ Missing messages will be skipped automatically\n🛑 Use `/tgprostop` to stop ongoing backup")
 
-            success_count = await self.process_backup(chat, message_ids, message.chat.id)
+            success_count, failed_count, missing_messages = await self.process_backup(chat, message_ids, message.chat.id, message.from_user.id)
             
-            if success_count > 0:
-                await message.reply(f"✅ Backup completed!\n📨 Processed: {success_count}/{len(message_ids)} messages from **{chat['title']}**")
-            else:
-                await message.reply("❌ No messages were backed up")
+            result_message = f"✅ Backup completed!\n📨 Processed: {success_count}/{len(message_ids)} messages from **{chat['title']}**"
+            
+            if failed_count > 0:
+                result_message += f"\n❌ Failed: {failed_count} messages"
+            
+            if missing_messages:
+                result_message += f"\n⚠️ Missing: {len(missing_messages)} messages (IDs: {', '.join(map(str, missing_messages[:10]))}{'...' if len(missing_messages) > 10 else ''})"
+            
+            await message.reply(result_message)
 
         except Exception as e:
             await message.reply(f"❌ Backup failed: {str(e)}")
@@ -310,48 +335,92 @@ class SmartDiscoverBackupBot:
         except:
             return None
 
-    async def process_backup(self, chat, message_ids, user_chat_id):
-        """Process backup"""
+    async def process_backup(self, chat, message_ids, user_chat_id, user_id):
+        """Process backup - SKIPS MISSING MESSAGES AND CAN BE STOPPED"""
         try:
             total = len(message_ids)
             success_count = 0
+            failed_count = 0
+            missing_messages = []
 
-            status_msg = await self.app.send_message(user_chat_id, f"📊 Processing {total} messages from **{chat['title']}**...")
+            # Set active backup flag for this user
+            self.active_backups[user_id] = True
+
+            status_msg = await self.app.send_message(user_chat_id, f"📊 Processing {total} messages from **{chat['title']}**...\n⏳ Checking messages...\n🛑 Use `/tgprostop` to stop")
 
             for i, msg_id in enumerate(message_ids, 1):
+                # Check if stop was requested
+                if not self.active_backups.get(user_id, True):
+                    await status_msg.edit_text(f"🛑 Backup stopped by user!\n📊 Progress: {i-1}/{total}\n✅ Success: {success_count}\n⚠️ Missing: {len(missing_messages)}\n❌ Failed: {failed_count}")
+                    logger.info(f"🛑 Backup stopped by user {user_id} at message {msg_id}")
+                    break
+
                 try:
-                    # Get message
-                    message = await self.app.get_messages(chat['id'], msg_id)
+                    # Get message with error handling for missing messages
+                    try:
+                        message = await self.app.get_messages(chat['id'], msg_id)
+                        
+                        if message and not getattr(message, "empty", False):
+                            # Safety delay
+                            delay = random.randint(self.min_delay, self.max_delay)
+                            await asyncio.sleep(delay)
+
+                            # Check again if stop was requested during delay
+                            if not self.active_backups.get(user_id, True):
+                                await status_msg.edit_text(f"🛑 Backup stopped by user!\n📊 Progress: {i-1}/{total}\n✅ Success: {success_count}\n⚠️ Missing: {len(missing_messages)}\n❌ Failed: {failed_count}")
+                                logger.info(f"🛑 Backup stopped by user {user_id} during delay before message {msg_id}")
+                                break
+
+                            # Backup message WITH ORIGINAL CAPTION
+                            await self.backup_single_message_exact(message, chat)
+                            success_count += 1
+
+                            logger.info(f"✅ Backed up message {msg_id} from {chat['title']}")
+                        else:
+                            # Message is empty or not found
+                            missing_messages.append(msg_id)
+                            logger.warning(f"⚠️ Message {msg_id} not found in {chat['title']}")
+                            
+                    except Exception as msg_error:
+                        # Handle missing messages specifically
+                        if "MESSAGE_ID_INVALID" in str(msg_error) or "MESSAGE_NOT_FOUND" in str(msg_error):
+                            missing_messages.append(msg_id)
+                            logger.warning(f"⚠️ Message {msg_id} not found in {chat['title']}")
+                        else:
+                            # Other errors
+                            failed_count += 1
+                            logger.error(f"❌ Message {msg_id} failed: {msg_error}")
+
+                    # Progress update - show current status
+                    progress = f"📊 Progress: {i}/{total}\n✅ Success: {success_count}\n⚠️ Missing: {len(missing_messages)}\n❌ Failed: {failed_count}\n🛑 Use `/tgprostop` to stop"
                     
-                    if message and not getattr(message, "empty", False):
-                        # Safety delay
-                        delay = random.randint(self.min_delay, self.max_delay)
-                        await asyncio.sleep(delay)
-
-                        # Backup message WITH ORIGINAL CAPTION
-                        await self.backup_single_message_exact(message, chat)
-                        success_count += 1
-
-                        logger.info(f"✅ Backed up message {msg_id} from {chat['title']}")
-                    else:
-                        logger.warning(f"⚠️ Message {msg_id} not found in {chat['title']}")
-
-                    # Progress update
-                    progress = f"📊 Progress: {i}/{total} ({success_count} successful)"
-                    await status_msg.edit_text(progress)
+                    # Update status every 5 messages or if it's the last message to avoid too many updates
+                    if i % 5 == 0 or i == total:
+                        await status_msg.edit_text(progress)
 
                 except FloodWait as e:
                     logger.warning(f"🚫 Flood wait: {e.value}s")
                     await asyncio.sleep(e.value + 5)
+                    # Retry the same message after flood wait
+                    i -= 1  # Decrement counter to retry same message
                 except Exception as e:
-                    logger.error(f"❌ Message {msg_id} failed: {e}")
+                    failed_count += 1
+                    logger.error(f"❌ Message {msg_id} failed with unexpected error: {e}")
+                    # Continue with next message instead of stopping
 
-            return success_count
+            # Clear the active backup flag
+            if user_id in self.active_backups:
+                del self.active_backups[user_id]
+
+            return success_count, failed_count, missing_messages
                 
         except Exception as e:
             logger.error(f"Backup process error: {e}")
+            # Clear the active backup flag on error
+            if user_id in self.active_backups:
+                del self.active_backups[user_id]
             await self.app.send_message(user_chat_id, f"❌ Backup error: {str(e)}")
-            return 0
+            return 0, 0, []
 
     async def backup_single_message_exact(self, message, chat):
         """Backup a single message with EXACT original caption"""
